@@ -5,7 +5,7 @@ use crate::random;
 
 pub struct MonteCarloAggressiveEngine;
 
-const ITERATIONS_PER_TURN: i32 = 1000;
+const ITERATIONS_PER_TURN: i32 = 10000;
 const STEPS_TO_SIMULATE: i32 = 15;
 // Each move in the future has their score discounted by this factor
 const FUTURE_DISCOUNT: f32 = 0.65f32;
