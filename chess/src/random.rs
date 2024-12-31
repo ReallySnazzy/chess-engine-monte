@@ -1,6 +1,8 @@
 use cozy_chess::{Board, Move};
 use rand::Rng;
 
+use crate::cozy_helper::available_moves;
+
 pub fn rand_num(max: usize) -> usize {
     if max <= 0 {
         panic!("Expected non-zero range. Got {}", max);
