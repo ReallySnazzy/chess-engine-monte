@@ -5,6 +5,9 @@ use rand::Rng;
 use simplelog::{CombinedLogger, WriteLogger};
 use vampirc_uci::{parse_one, UciMessage, UciMove, UciSquare};
 
+const MOVES_TO_SIMULATE: i32 = 20;
+const STEPS_TO_SIMULATE: i32 = 4;
+
 fn rand_num(max: usize) -> usize {
     rand::thread_rng().gen_range(0..max)
 }
@@ -86,6 +89,47 @@ fn cozy_move_of_uci_move(uci_move: &UciMove) -> Move {
     }
 }
 
+fn simulate_random(board: Board, remaining_steps: i32, current_score: f32) -> (f32, Vec<Move>) {
+    debug!("Remaining steps: {}", remaining_steps);
+    let mut board = board;
+    if remaining_steps <= 0 {
+        return (current_score, vec![]);
+    }
+    let mut move_list = Vec::new();
+    board.generate_moves(|moves| {
+        move_list.extend(moves);
+        false
+    });
+    let Some(next_move) = move_list.get(rand_num(move_list.len())) else {
+        return (current_score, vec![]);
+    };
+    board.play_unchecked(*next_move);
+    board.null_move();
+    let piece = board.piece_on(next_move.to);
+    let additional_score = match piece {
+        Some(cozy_chess::Piece::King) => 100f32,
+        Some(cozy_chess::Piece::Queen) => 25f32,
+        Some(cozy_chess::Piece::Bishop) => 5f32,
+        Some(cozy_chess::Piece::Rook) => 5f32,
+        Some(cozy_chess::Piece::Knight) => 5f32,
+        Some(cozy_chess::Piece::Pawn) => 1f32,
+        None => -1f32,
+    };
+    let mut best_score = -100f32;
+    let mut best_moves = vec!();
+    for _ in 0..MOVES_TO_SIMULATE {
+        let (score, moves) = simulate_random(board.clone(), remaining_steps - 1, current_score + additional_score);
+        if score > best_score {
+            best_score = score;
+            best_moves = moves;
+        }
+    }
+    let mut last_move_and_best_moves = Vec::new();
+    last_move_and_best_moves.push(*next_move);
+    last_move_and_best_moves.extend(best_moves.into_iter());
+    return (best_score, last_move_and_best_moves);
+}
+
 fn main() {
     CombinedLogger::init(vec![
         WriteLogger::new(
@@ -109,28 +153,22 @@ fn main() {
                 info!("Responding UciOk");
                 println!("{}", UciMessage::UciOk);
             },
+            UciMessage::UciNewGame => {
+                board = Board::default();
+            },
             UciMessage::IsReady => {
                 info!("Responding ReadyOk");
                 println!("{}", UciMessage::ReadyOk);
             },
             UciMessage::Go {time_control: _, search_control: _} => {
                 info!("In Go");
-                let mut move_list = Vec::new();
-                board.generate_moves(|moves| {
-                    move_list.extend(moves);
-                    false
-                });
-                let rand_indx = rand_num(move_list.len());
-                debug!("Have move options: {:?}, selected {} of {}", move_list, rand_indx, move_list.len());
-                let Some(first_move) = move_list.get(rand_indx) else {
-                    warn!("No move found");
-                    continue;
-                };
+                let best_move_set = simulate_random(board.clone(), STEPS_TO_SIMULATE, 0f32);
+                debug!("Got best move set {:?}", best_move_set);
+                let first_move = best_move_set.1.first().unwrap();
                 board.play_unchecked(*first_move);
                 let is_promotion = first_move.promotion.is_some();
                 let best_move = uci_move_of_cozy_move(first_move, is_promotion);
                 info!("Making move {}", best_move);
-                std::thread::sleep(Duration::from_millis(500));
                 println!("{}", UciMessage::BestMove { 
                     best_move, 
                     ponder: None
