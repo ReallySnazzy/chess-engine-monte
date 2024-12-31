@@ -29,7 +29,6 @@ fn score_move(board: &Board, next_move: &Move) -> f32 {
 
 fn play_random_move(board: &mut Board) -> Option<(f32, Move)> {
     let Some(next_move) = random::random_move(&board) else {
-        info!("Out of moves");
         return None;
     };
     let score = score_move(board, &next_move);
