@@ -4,7 +4,8 @@ use vampirc_uci::{UciMove, UciSquare};
 
 pub fn available_moves(board: &Board) -> Vec<Move> {
     let mut move_list = Vec::new();
-    board.generate_moves(|moves| {
+    let active_pieces = board.colors(board.side_to_move());
+    board.generate_moves_for(active_pieces, |moves| {
         move_list.extend(moves);
         false
     });

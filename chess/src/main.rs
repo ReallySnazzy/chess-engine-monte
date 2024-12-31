@@ -85,6 +85,10 @@ fn handle_uci_command(cmd: UciMessage, engine: &Box<dyn Engine>, board: &mut Boa
             info!("Received quit command");
             panic!("Terminate");
         },
+        UciMessage::Stop => {
+            info!("Received stop command");
+            panic!("Terminal since unimplemented");
+        },
         message => {
             warn!("Unimplemented message! {}", message);
         }
