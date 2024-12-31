@@ -1,16 +1,14 @@
 use cozy_chess::{Board, Move, Piece};
-use log::{debug, info, warn};
+use log::{info, warn};
 
 use crate::random;
 
 pub struct MonteCarloAggressiveEngine;
 
-const MOVES_TO_SIMULATE: i32 = 30;
-const STEPS_TO_SIMULATE: i32 = 5;
-// The number to shrink the breadth of the search each move in the future
-const DOWN_MOVES_PER_STEP: i32 = 4;
+const ITERATIONS_PER_TURN: i32 = 1000;
+const STEPS_TO_SIMULATE: i32 = 15;
 // Each move in the future has their score discounted by this factor
-const FUTURE_DISCOUNT: f32 = 0.52f32;
+const FUTURE_DISCOUNT: f32 = 0.65f32;
 
 fn score_capture(piece: &Option<Piece>) -> f32 {
     match piece {
@@ -56,42 +54,40 @@ fn score_move_set(moves: &Vec<(f32, Move)>) -> f32 {
     return total_score;
 }
 
-fn simulate_random(board: Board, remaining_steps: i32, breadth: i32) -> Vec<(f32, Move)> {
+fn simulate_random_turn(board: Board, remaining_steps: i32) -> Vec<(f32, Move)> {
     if remaining_steps <= 0 {
         return vec![];
     }
-    let mut best_score = -10000f32;
-    let mut best_move_set = vec![];
-    for _ in 0..breadth {
-        let mut temp_board = board.clone();
-        // Play random player move and keep score
-        let Some(next_move_and_score) = play_random_move(&mut temp_board) else {
-            continue;
-        };
-        // Play random opponent move
-        play_random_move(&mut temp_board);
-        // Measure score of opportunities provided by current move
-        let additional_moves = simulate_random(
-            temp_board.clone(), 
-            remaining_steps - 1, 
-            breadth - DOWN_MOVES_PER_STEP,
-        );
-        let mut all_moves = vec![next_move_and_score];
-        all_moves.extend(additional_moves);
-        let overall_score = score_move_set(&all_moves);
-        if overall_score > best_score {
-            best_score = overall_score;
-            best_move_set = all_moves;
-        }
-    }
-    return best_move_set;
+    let mut board = board.clone();
+    // Play random player move and keep score
+    let Some(next_move_and_score) = play_random_move(&mut board) else {
+        return vec![];
+    };
+    // Play random opponent move
+    play_random_move(&mut board);
+    // Measure score of opportunities provided by current move
+    let additional_moves = simulate_random_turn(
+        board.clone(), 
+        remaining_steps - 1, 
+    );
+    let mut all_moves = vec![next_move_and_score];
+    all_moves.extend(additional_moves);
+    return all_moves;
 }
 
 impl crate::engine::Engine for MonteCarloAggressiveEngine {
     fn play(&self, board: &Board) -> Option<Move> {
-        let next_move_set = simulate_random(board.clone(), STEPS_TO_SIMULATE, MOVES_TO_SIMULATE);
-        let total_score = score_move_set(&next_move_set);
-        info!("Selecting move set with score {}: {:?}", total_score, next_move_set);
-        next_move_set.into_iter().next().map(|x| x.1)
+        let mut best_move_set: Vec<(f32, Move)>  = vec![];
+        let mut best_score = -100000f32;
+        for _ in 0..ITERATIONS_PER_TURN {
+            let next_move_set = simulate_random_turn(board.clone(), STEPS_TO_SIMULATE);
+            let total_score = score_move_set(&next_move_set);
+            if total_score > best_score {
+                best_score = total_score;
+                best_move_set = next_move_set;
+            }
+        }
+        info!("Selecting move set with score {}: {:?}", best_score, best_move_set);
+        best_move_set.into_iter().next().map(|x| x.1)
     }
 }
