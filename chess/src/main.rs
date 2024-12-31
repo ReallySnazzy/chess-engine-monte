@@ -1,13 +1,13 @@
-use std::io::{self, BufRead};
+use std::{any::Any, io::{self, BufRead}};
 use cozy_chess::{Board, File, Move, Rank, Square};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use rand::Rng;
 use simplelog::{CombinedLogger, WriteLogger};
 use vampirc_uci::{parse_one, UciMessage, UciMove, UciSquare};
 
-const MOVES_TO_SIMULATE: i32 = 100;
-const STEPS_TO_SIMULATE: i32 = 4;
-const DOWN_STEPS_PER_LAYER: i32 = 20;
+const MOVES_TO_SIMULATE: i32 = 4;
+const STEPS_TO_SIMULATE: i32 = 8;
+const DOWN_STEPS_PER_LAYER: i32 = 0;
 
 #[derive(PartialEq, Debug)]
 enum Engine {
@@ -16,7 +16,18 @@ enum Engine {
 }
 
 fn rand_num(max: usize) -> usize {
+    if max <= 0 {
+        panic!("Expected non-zero range. Got {}", max);
+    }
     rand::thread_rng().gen_range(0..max)
+}
+
+fn rand_item<'l, T>(items: &'l Vec<T>) -> Option<&T> {
+    if items.is_empty() {
+        None 
+    } else {
+        Some(&items[rand_num(items.len())])
+    }
 }
 
 fn uci_square_of_cozy_square(cozy: &Square) -> UciSquare {
@@ -68,7 +79,7 @@ fn cozy_square_of_uci_square(cozy: &UciSquare) -> Square {
         'h' => File::H,
         f => {
             warn!("Invalid file {}", f);
-            panic!("cry");
+            panic!("Invalid file {}", f);
         }
     };
     let rank = match cozy.rank {
@@ -82,7 +93,7 @@ fn cozy_square_of_uci_square(cozy: &UciSquare) -> Square {
         8 => Rank::Eighth,
         r => {
             warn!("Invalid rank {}", r);
-            panic!("cry!");
+            panic!("Invalid rank {}", r);
         }
     };
     Square::new(file, rank)
@@ -110,12 +121,24 @@ fn simulate_random(board: Board, remaining_steps: i32, breadth: i32, current_sco
     if remaining_steps <= 0 {
         return (current_score, vec![]);
     }
+    // Make a random play
     let move_list = next_moves(&board);
-    let Some(next_move) = move_list.get(rand_num(move_list.len())) else {
+    if move_list.is_empty() {
+        warn!("No moves left");
+        return (current_score, vec![]);
+    }
+    let Some(next_move) = rand_item(&move_list) else {
+        info!("Player out of moves");
         return (current_score, vec![]);
     };
-    board.play_unchecked(*next_move);
-    board.null_move();
+    match board.try_play(*next_move) {
+        Ok(_) => (),
+        Err(e) => {
+            warn!("Failed to make play: {}", e);
+            panic!("Failed to make play: {}", e);
+        }
+    }
+    // Record play score
     let piece = board.piece_on(next_move.to);
     let additional_score = match piece {
         Some(cozy_chess::Piece::King) => 100f32,
@@ -126,6 +149,20 @@ fn simulate_random(board: Board, remaining_steps: i32, breadth: i32, current_sco
         Some(cozy_chess::Piece::Pawn) => 1f32,
         None => -1f32,
     };
+    // Pick random opponent move
+    let opponent_moves = next_moves(&board);
+    let Some(opponent_move) = rand_item(&opponent_moves) else {
+        info!("Opponent out of moves");
+        return (current_score, vec![]);
+    };
+    match board.try_play(*opponent_move) {
+        Err(e) => {
+            warn!("Failed to play random move: {}", e);
+            panic!("Failed to play random move: {}", e);
+        },
+        _ => ()
+    }
+    // Sample random moves
     let mut best_score = -100f32;
     let mut best_moves = vec!();
     for _ in 0..breadth {
@@ -147,13 +184,6 @@ fn simulate_random(board: Board, remaining_steps: i32, breadth: i32, current_sco
 }
 
 fn main() {
-    CombinedLogger::init(vec![
-        WriteLogger::new(
-            log::LevelFilter::Debug, 
-            simplelog::Config::default(), 
-            std::fs::File::create("mylog.log").unwrap()
-        )
-    ]).unwrap();
     let mut stdin = io::stdin().lock();
     let mut mode = String::new();
     stdin.read_line(&mut mode).unwrap();
@@ -165,12 +195,29 @@ fn main() {
             panic!("Unknown engine selection");
         }
     };
+    if engine_mode == Engine::MonteCarloAggressive {
+        CombinedLogger::init(vec![
+            WriteLogger::new(
+                log::LevelFilter::Debug, 
+                simplelog::Config::default(), 
+                std::fs::File::create("mylog.log").unwrap()
+            )
+        ]).unwrap();
+    } else {
+        CombinedLogger::init(vec![]).unwrap();
+    }
     info!("Started {:?}", engine_mode);
     let mut board = Board::default();
     println!("{}", UciMessage::Uci);
     info!("Printing UCI message");
     for line in stdin.lines() {
-        let msg: UciMessage = parse_one(&line.unwrap());
+        let msg: UciMessage = match line {
+            Ok(line) => parse_one(&line),
+            _ => {
+                warn!("Failed to parse line");
+                panic!("Failed to parse line");
+            }
+        };
         match msg {
             UciMessage::Uci => {
                 println!("{}", UciMessage::Id { 
@@ -190,11 +237,38 @@ fn main() {
             UciMessage::Go {time_control: _, search_control: _} => {
                 info!("In Go");
                 let first_move = if engine_mode == Engine::MonteCarloAggressive {
-                    let best_move_set = simulate_random(board.clone(), STEPS_TO_SIMULATE, MOVES_TO_SIMULATE, 0f32);
-                    best_move_set.1.into_iter().next().unwrap()
+                    info!("MontoCarloSimulateAggressive");
+                    match std::panic::catch_unwind(|| {
+                        let Some(best_move_set) = simulate_random(board.clone(), STEPS_TO_SIMULATE, MOVES_TO_SIMULATE, 0f32)
+                            .1
+                            .into_iter()
+                            .next() 
+                        else {
+                            warn!("No best move found");
+                            panic!("No best move found");
+                        };
+                        best_move_set
+                    }) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            let message = if let Some(s) = e.downcast_ref::<String>() {
+                                s.clone()
+                            } else if let Some(s) = e.downcast_ref::<&str>() {
+                                (*s).to_owned()
+                            } else {
+                                format!("Unknown error: {:?}", e)
+                            };
+                            error!("Simulation paniced: {}", message);
+                            panic!("Simulation paniced: {}", message);
+                        }
+                    }
                 } else if engine_mode == Engine::Random {
                     let move_list = next_moves(&board);
-                    move_list.get(rand_num(move_list.len())).unwrap().clone()
+                    let Some(next_move) = move_list.get(rand_num(move_list.len())).cloned() else {
+                        warn!("No next move found");
+                        panic!("No next move found");
+                    };
+                    next_move
                 } else {
                     warn!("Unimplemented engine");
                     panic!("Unimplemented engine");
