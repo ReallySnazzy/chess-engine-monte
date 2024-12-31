@@ -1,12 +1,19 @@
-use std::{io::{self, BufRead}, time::Duration};
+use std::io::{self, BufRead};
 use cozy_chess::{Board, File, Move, Rank, Square};
 use log::{debug, info, warn};
 use rand::Rng;
 use simplelog::{CombinedLogger, WriteLogger};
 use vampirc_uci::{parse_one, UciMessage, UciMove, UciSquare};
 
-const MOVES_TO_SIMULATE: i32 = 20;
+const MOVES_TO_SIMULATE: i32 = 100;
 const STEPS_TO_SIMULATE: i32 = 4;
+const DOWN_STEPS_PER_LAYER: i32 = 20;
+
+#[derive(PartialEq, Debug)]
+enum Engine {
+    MonteCarloAggressive,
+    Random
+}
 
 fn rand_num(max: usize) -> usize {
     rand::thread_rng().gen_range(0..max)
@@ -60,7 +67,7 @@ fn cozy_square_of_uci_square(cozy: &UciSquare) -> Square {
         'g' => File::G,
         'h' => File::H,
         f => {
-            println!("Invalid file {}", f);
+            warn!("Invalid file {}", f);
             panic!("cry");
         }
     };
@@ -74,7 +81,7 @@ fn cozy_square_of_uci_square(cozy: &UciSquare) -> Square {
         7 => Rank::Seventh,
         8 => Rank::Eighth,
         r => {
-            println!("Invalid rank {}", r);
+            warn!("Invalid rank {}", r);
             panic!("cry!");
         }
     };
@@ -89,17 +96,21 @@ fn cozy_move_of_uci_move(uci_move: &UciMove) -> Move {
     }
 }
 
-fn simulate_random(board: Board, remaining_steps: i32, current_score: f32) -> (f32, Vec<Move>) {
-    debug!("Remaining steps: {}", remaining_steps);
-    let mut board = board;
-    if remaining_steps <= 0 {
-        return (current_score, vec![]);
-    }
+fn next_moves(board: &Board) -> Vec<Move> {
     let mut move_list = Vec::new();
     board.generate_moves(|moves| {
         move_list.extend(moves);
         false
     });
+    return move_list;
+}
+
+fn simulate_random(board: Board, remaining_steps: i32, breadth: i32, current_score: f32) -> (f32, Vec<Move>) {
+    let mut board = board;
+    if remaining_steps <= 0 {
+        return (current_score, vec![]);
+    }
+    let move_list = next_moves(&board);
     let Some(next_move) = move_list.get(rand_num(move_list.len())) else {
         return (current_score, vec![]);
     };
@@ -117,8 +128,13 @@ fn simulate_random(board: Board, remaining_steps: i32, current_score: f32) -> (f
     };
     let mut best_score = -100f32;
     let mut best_moves = vec!();
-    for _ in 0..MOVES_TO_SIMULATE {
-        let (score, moves) = simulate_random(board.clone(), remaining_steps - 1, current_score + additional_score);
+    for _ in 0..breadth {
+        let (score, moves) = simulate_random(
+            board.clone(), 
+            remaining_steps - 1, 
+            breadth - DOWN_STEPS_PER_LAYER, 
+            current_score + additional_score
+        );
         if score > best_score {
             best_score = score;
             best_moves = moves;
@@ -138,11 +154,22 @@ fn main() {
             std::fs::File::create("mylog.log").unwrap()
         )
     ]).unwrap();
-    info!("Started");
+    let mut stdin = io::stdin().lock();
+    let mut mode = String::new();
+    stdin.read_line(&mut mode).unwrap();
+    let engine_mode = match mode.trim() {
+        "monteattack" => Engine::MonteCarloAggressive,
+        "random" => Engine::Random,
+        _ => {
+            warn!("Unknown engine selection");
+            panic!("Unknown engine selection");
+        }
+    };
+    info!("Started {:?}", engine_mode);
     let mut board = Board::default();
     println!("{}", UciMessage::Uci);
     info!("Printing UCI message");
-    for line in io::stdin().lock().lines() {
+    for line in stdin.lines() {
         let msg: UciMessage = parse_one(&line.unwrap());
         match msg {
             UciMessage::Uci => {
@@ -162,12 +189,20 @@ fn main() {
             },
             UciMessage::Go {time_control: _, search_control: _} => {
                 info!("In Go");
-                let best_move_set = simulate_random(board.clone(), STEPS_TO_SIMULATE, 0f32);
-                debug!("Got best move set {:?}", best_move_set);
-                let first_move = best_move_set.1.first().unwrap();
-                board.play_unchecked(*first_move);
+                let first_move = if engine_mode == Engine::MonteCarloAggressive {
+                    let best_move_set = simulate_random(board.clone(), STEPS_TO_SIMULATE, MOVES_TO_SIMULATE, 0f32);
+                    best_move_set.1.into_iter().next().unwrap()
+                } else if engine_mode == Engine::Random {
+                    let move_list = next_moves(&board);
+                    move_list.get(rand_num(move_list.len())).unwrap().clone()
+                } else {
+                    warn!("Unimplemented engine");
+                    panic!("Unimplemented engine");
+                };
+                debug!("Got best move {:?}", first_move);
+                board.play_unchecked(first_move);
                 let is_promotion = first_move.promotion.is_some();
-                let best_move = uci_move_of_cozy_move(first_move, is_promotion);
+                let best_move = uci_move_of_cozy_move(&first_move, is_promotion);
                 info!("Making move {}", best_move);
                 println!("{}", UciMessage::BestMove { 
                     best_move, 
@@ -181,6 +216,10 @@ fn main() {
                 };
                 info!("Applying move {}", next_move);
                 board.play_unchecked(cozy_move_of_uci_move(&next_move));
+            },
+            UciMessage::Quit => {
+                info!("Received quit command");
+                break;
             },
             message => {
                 warn!("Unimplemented message! {}", message);
